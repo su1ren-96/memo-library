@@ -1,0 +1,473 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no"><meta name="theme-color" content="#050505"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Memo Library"><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icons/icon-192.png"><title>Memo Library</title><style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;background:#050505;color:white}*{box-sizing:border-box}body{margin:0;background:#050505}button,input,textarea{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #ff375f}#app{max-width:650px;margin:auto;min-height:100dvh;padding-bottom:150px}.topbar{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;position:sticky;top:0;z-index:5;background:rgba(5,5,5,.85);backdrop-filter:blur(20px)}.navback{border:0;background:none;color:#ff375f;font-size:17px}.iconbtn{background:#292929aa;color:#fff;border:0;border-radius:50%;width:40px;height:40px;font-size:22px}.title{font-size:32px;letter-spacing:-.7px;font-weight:750;margin:18px 20px}.section{margin:30px 0 12px 20px;display:flex;align-items:center;justify-content:space-between;padding-right:20px}.section h2{font-size:23px;margin:0}.section button{color:#aaa;background:none;border:0}.hero{height:310px;position:relative;background:linear-gradient(145deg,#1a93c7,#67bedb 55%,#164e79);overflow:hidden}.hero img{width:100%;height:100%;object-fit:cover}.hero:after{content:"";position:absolute;inset:50% 0 0;background:linear-gradient(transparent,rgba(0,0,0,.58))}.herotitle{position:absolute;bottom:25px;left:22px;z-index:1;font-size:39px;font-weight:800;text-shadow:0 2px 12px #0008}.listrow{display:flex;align-items:center;gap:12px;margin:0 20px;padding:7px 0;border-bottom:1px solid #242424}.thumb{width:60px;height:60px;border-radius:8px;object-fit:cover;background:#333;flex-shrink:0}.thumb.placeholder,.cover.placeholder{display:grid;place-items:center;color:#fff;background:linear-gradient(140deg,#374c77,#b18b9e);font-size:30px}.rowtext{min-width:0;flex:1}.rowtext .name{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.muted{color:#999;font-size:13px;margin-top:4px}.more{background:none;border:0;color:#ddd;font-size:24px;padding:8px}
+.rail{
+  display:flex;
+  gap:14px;
+  overflow-x:auto;
+  padding:0 20px 10px;
+  scroll-snap-type:x mandatory;
+  scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;
+}.rail::-webkit-scrollbar{display:none}
+.tile{
+  width:140px;
+  flex:0 0 140px;
+  scroll-snap-align:start;
+}
+
+.cover{
+  width:140px;
+  height:140px;
+  object-fit:cover;
+  border-radius:9px;
+  background:#343434;
+}
+.tile .name{margin-top:8px;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tile .muted{margin-top:3px}.tabbar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);max-width:650px;width:100%;z-index:9;padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:linear-gradient(transparent,#080808 18%)}.tabs{background:#272727e8;border:1px solid #5558;backdrop-filter:blur(30px);border-radius:26px;display:flex;justify-content:space-around;padding:10px 4px}.tab{background:none;border:0;color:#aaa;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;min-width:64px}.tab span{font-size:23px}.tab.active{color:#ff375f}.action{background:#fa2d55;color:white;border:0;border-radius:14px;padding:12px 18px;font-weight:650}.outline{border:1px solid #555;border-radius:12px;padding:11px 15px;color:white;background:#242424}.content{padding:0 20px}.desc{white-space:pre-wrap;line-height:1.55;color:#bbb}.sheetback{position:fixed;inset:0;background:#000a;z-index:19;display:flex;align-items:flex-end;justify-content:center}.sheet{width:100%;max-width:650px;background:#202020;border-radius:24px 24px 0 0;padding:20px 20px calc(26px + env(safe-area-inset-bottom));max-height:90dvh;overflow:auto}.sheet h2{margin:0 0 18px}.field{width:100%;padding:13px 14px;border-radius:12px;background:#333;border:1px solid #555;color:#fff;margin:6px 0 16px}.field::placeholder{color:#999}textarea.field{min-height:145px;resize:vertical}.fieldlabel{color:#aaa;font-size:13px}.sheetactions{display:flex;gap:10px;justify-content:flex-end}.empty{padding:35px 22px;color:#aaa;text-align:center}.pill{border:1px solid #555;border-radius:25px;background:#252525;color:#fff;padding:9px 14px}.search{margin:0 20px;width:calc(100% - 40px)}
+.cardgrid{
+  display:flex;
+  gap:14px;
+  overflow-x:auto;
+  padding:0 20px 10px;
+  scroll-snap-type:x mandatory;
+  scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;
+}
+
+.cardgrid::-webkit-scrollbar{
+  display:none;
+}
+
+.cardgrid .tile{
+  width:140px;
+  flex:0 0 140px;
+  scroll-snap-align:start;
+}
+
+.cardgrid .cover{
+  width:140px;
+  height:140px;
+  aspect-ratio:1;
+  object-fit:cover;
+}
+
+.hint{font-size:12px;color:#999;line-height:1.5}.spacer{height:12px}
+/* ===== Apple Music風：テーマ詳細画面 ===== */
+
+.album-page {
+  min-height: 100dvh;
+  background: linear-gradient(
+    180deg,
+    #38312f 0%,
+    #292525 45%,
+    #171515 100%
+  );
+}
+
+.album-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+}
+
+.album-back {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid #ffffff30;
+  background: #ffffff10;
+  color: white;
+  font-size: 30px;
+}
+
+.album-menu {
+  border: 1px solid #ffffff30;
+  border-radius: 24px;
+  background: #ffffff10;
+  color: white;
+  padding: 10px 18px;
+  font-size: 22px;
+}
+
+.album-cover {
+  width: min(70vw, 320px);
+  height: min(70vw, 320px);
+  margin: 25px auto 0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 15px 35px #0005;
+}
+
+.album-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.album-info {
+  text-align: center;
+  padding: 22px 20px 0;
+}
+
+.album-title {
+  font-size: 30px;
+  font-weight: 750;
+  margin: 0 0 6px;
+}
+
+.album-description {
+  color: #d1caca;
+  font-size: 16px;
+  margin: 0;
+}
+
+.album-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px 20px;
+}
+
+.album-primary {
+  border: 0;
+  border-radius: 28px;
+  background: #fff;
+  color: #242020;
+  padding: 13px 30px;
+  font-weight: 700;
+}
+
+.album-round {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 0;
+  background: #ffffff20;
+  color: white;
+  font-size: 24px;
+}
+
+.album-notes {
+  padding: 0 20px;
+}
+
+.album-note {
+  display: flex;
+  align-items: center;
+  min-height: 62px;
+  border-top: 1px solid #ffffff24;
+  gap: 16px;
+}
+
+.album-number {
+  width: 22px;
+  text-align: center;
+  color: #aaa;
+  flex-shrink: 0;
+}
+
+.album-note-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.album-note-menu {
+  background: none;
+  border: 0;
+  color: #ccc;
+  font-size: 22px;
+  padding: 10px;
+}
+
+/* ===== アルバムカバーの表示修正 ===== */
+
+.album-cover {
+  width: min(78vw, 340px);
+  height: auto;
+  aspect-ratio: 1 / 1;
+  margin: 25px auto 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  display: block;
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.35);
+}
+
+.album-cover > .cover {
+  display: block;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1 / 1;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  object-fit: cover;
+}
+
+.album-cover > .cover.placeholder {
+  display: grid;
+  place-items: center;
+}
+
+/* ===== カバー画像に合わせた背景 ===== */
+
+.album-page {
+  --album-color: 65, 75, 105;
+
+  background:
+    linear-gradient(
+      180deg,
+      rgba(var(--album-color), 0.65) 0%,
+      rgba(var(--album-color), 0.35) 38%,
+      #171515 85%
+    );
+
+  min-height: 100dvh;
+  padding-bottom: 30px;
+}
+/* ===== メモの長押しドラッグ ===== */
+
+.album-note {
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y;
+}
+
+.album-note.dragging {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  opacity: 0.95;
+  transform: translateY(var(--drag-y, 0px)) scale(1.03);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  pointer-events: none;
+}
+
+.album-note.drag-over {
+  border-top: 2px solid #ff375f;
+}
+
+.album-note-title {
+  cursor: grab;
+}
+
+.album-note.dragging .album-note-title {
+  cursor: grabbing;
+}
+
+/* ===== 並べ替えアニメーション ===== */
+
+.album-note {
+  transition:
+    transform 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.album-note.sort-shift-up {
+  transform: translateY(-100%);
+}
+
+.album-note.sort-shift-down {
+  transform: translateY(100%);
+}
+
+.album-note.dragging {
+  transition:
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+/* ホーム画面の横スクロール余白 */
+.rail,
+.cardgrid{
+  scroll-padding-left:20px;
+  scroll-padding-right:20px;
+}
+
+/* ===== トップのメモ ===== */
+
+.topnotes-scroll {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding: 0 20px 12px;
+  scroll-snap-type: x mandatory;
+  scroll-padding-left: 20px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.topnotes-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.topnotes-page {
+  flex: 0 0 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  scroll-snap-align: start;
+}
+
+.topnotes-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 72px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  cursor: pointer;
+}
+
+.topnotes-cover {
+  width: 54px;
+  height: 54px;
+  flex: 0 0 54px;
+  border-radius: 7px;
+  object-fit: cover;
+  background: #303030;
+}
+
+.topnotes-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.topnotes-title {
+  color: #fff;
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topnotes-subtitle {
+  color: #999;
+  font-size: 13px;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topnotes-more {
+  flex: 0 0 36px;
+  background: transparent;
+  border: none;
+  color: #ddd;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+/* ===== トップのメモ：選択画面 ===== */
+
+.topnotes-picker {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 16px 0;
+}
+
+.topnotes-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 4px;
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  cursor: pointer;
+}
+
+.topnotes-choice input {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: #fa2d55;
+}
+
+.topnotes-choice span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.topnotes-choice strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.topnotes-choice small {
+  color: #999;
+  font-size: 12px;
+}
+
+/* ===== ホーム画面：大きなカバー画像 ===== */
+
+.home-hero {
+  position: relative;
+  width: 100%;
+  height: 430px;
+  overflow: hidden;
+  background: #252525;
+}
+
+.home-hero-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.home-hero-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 90px;
+  color: #777;
+  background: linear-gradient(135deg, #343434, #111);
+}
+
+.home-hero-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 40%,
+    rgba(0, 0, 0, 0.8) 100%
+  );
+  pointer-events: none;
+}
+
+.home-hero-title {
+  position: absolute;
+  left: 20px;
+  bottom: 25px;
+  margin: 0;
+  color: white;
+  font-size: 38px;
+  font-weight: 800;
+  text-shadow: 0 2px 10px rgba(0,0,0,.4);
+}
+
+.home-hero-edit {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255,255,255,.5);
+  border-radius: 20px;
+  background: rgba(0,0,0,.45);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 2;
+}
+
+</style></head><body><div id="app"></div><div id="modal"></div><script src="app.js"></script></body></html>
