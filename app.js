@@ -1,6 +1,277 @@
 'use strict';
-const KEY='memo-library-data-v1';const uid=()=>Math.random().toString(36).slice(2)+Date.now().toString(36);const initial={themes:[{id:'t1',name:'旅行の記録',desc:'旅の計画と思い出をまとめる場所',image:'',favorite:true},{id:'t2',name:'日々の記録',desc:'毎日の小さな発見',image:'',favorite:false}],notes:[{id:'n1',themeId:'t1',title:'京都で行きたい場所',body:'清水寺\n鴨川沿いの散歩\n喫茶店めぐり',image:'',favorite:true,updated:Date.now()},{id:'n2',themeId:'t1',title:'ホテル候補まとめ',body:'駅から近いホテルを探す。',image:'',favorite:false,updated:Date.now()-86400000},{id:'n3',themeId:'t2',title:'今日の出来事',body:'今日の出来事をここに書こう。',image:'',favorite:true,updated:Date.now()}]};
-let data;try{data=JSON.parse(localStorage.getItem(KEY))||structuredClone(initial)}catch{data=structuredClone(initial)};let view={page:'home',id:null,tab:'home',query:''};const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const find=(type,id)=>data[type].find(x=>x.id===id);const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(data));return true}catch(e){alert('保存容量が不足しています。画像を減らすかバックアップを作成してください。');return false}};const nav=(page,id=null)=>{view={...view,page,id};render();window.scrollTo(0,0)};const img=(url,cls='thumb',symbol='✎')=>url?`<img class="${cls}" src="${esc(url)}" alt="">`:`<div class="${cls} placeholder">${symbol}</div>`;const section=(name,extra='')=>`<div class="section"><h2>${esc(name)}</h2>${extra}</div>`;const row = (item, kind) => `
+
+// ===== IndexedDB 保存先の準備 =====
+const DB_NAME = 'memo-library-db';
+const DB_VERSION = 1;
+const STORE_NAME = 'appData';
+
+function openMemoDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+
+    request.onsuccess = () => {
+      resolve(request.result);
+    };
+
+    request.onerror = () => {
+      reject(request.error);
+    };
+  });
+}
+
+// ===== IndexedDBからデータを読み込む =====
+async function loadDataFromIndexedDB() {
+  const db = await openMemoDB();
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const request = tx.objectStore(STORE_NAME).get('main');
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+// ===== IndexedDBにデータを保存する =====
+async function saveDataToIndexedDB(newData) {
+  let db;
+
+  try {
+    db = await openMemoDB();
+
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+
+      tx.objectStore(STORE_NAME).put(newData, 'main');
+    });
+
+    return true;
+
+  } catch (error) {
+    console.error('IndexedDB保存エラー:', error);
+    return false;
+
+  } finally {
+    if (db) db.close();
+  }
+}
+
+// ===== 既存データの安全な移行 =====
+async function migrateLocalData() {
+  try {
+    // IndexedDBに既存データがあれば上書きしない
+    const existing = await loadDataFromIndexedDB();
+
+    if (existing !== undefined) {
+      if (
+        !Array.isArray(existing.themes) ||
+        !Array.isArray(existing.notes)
+      ) {
+        throw new Error('IndexedDBの既存データが不正です');
+      }
+
+      console.log('IndexedDBに既存データがあります。移行は不要です。');
+      return true;
+    }
+
+    // localStorageのデータを取得
+    const json = localStorage.getItem(KEY);
+
+    if (!json) {
+      console.log('移行する既存データはありません');
+      return true;
+    }
+
+    const original = JSON.parse(json);
+
+    if (
+      !Array.isArray(original.themes) ||
+      !Array.isArray(original.notes)
+    ) {
+      throw new Error('localStorageのデータ形式が不正です');
+    }
+
+    // IndexedDBにコピー
+    const saved = await saveDataToIndexedDB(original);
+
+    if (!saved) {
+      throw new Error('IndexedDBへの保存に失敗しました');
+    }
+
+    // コピー後に読み直して内容を照合
+    const copied = await loadDataFromIndexedDB();
+
+    if (JSON.stringify(original) !== JSON.stringify(copied)) {
+      throw new Error('コピー後のデータが一致しません');
+    }
+
+    console.log('IndexedDBへの移行と照合が成功しました', {
+      テーマ数: copied.themes.length,
+      メモ数: copied.notes.length
+    });
+
+    return true;
+
+  } catch (error) {
+    console.error('データ移行エラー:', error);
+    return false;
+  }
+}
+
+// ===== IndexedDBの保存順序を管理 =====
+let storageSaveQueue = Promise.resolve();
+let lastSavedData = null;
+
+function queueIndexedDBSave(snapshot) {
+  const task = storageSaveQueue.then(() => {
+    return saveDataToIndexedDB(snapshot);
+  });
+
+  // 保存に失敗しても、次の保存を実行できるようにする
+  storageSaveQueue = task.catch(error => {
+    console.error('保存キューエラー:', error);
+  });
+
+  return task;
+}
+
+// ===== 最後に保存できたデータへ戻す =====
+function restoreLastSavedData() {
+  if (!lastSavedData) {
+    console.error('復元できるデータがありません');
+    return false;
+  }
+
+  try {
+    data = structuredClone(lastSavedData);
+    return true;
+  } catch (error) {
+    console.error('データの復元に失敗:', error);
+    return false;
+  }
+}
+
+// ===== IndexedDB用の安全な保存処理 =====
+async function saveToNewStorage() {
+  if (!storageReady || storageError) {
+    alert('保存の準備が完了していません。');
+    return false;
+  }
+
+  // 保存する瞬間のデータをコピー
+  let snapshot;
+
+  try {
+    snapshot = structuredClone(data);
+  } catch (error) {
+    console.error('保存データのコピーに失敗:', error);
+    alert('保存データを準備できませんでした。');
+    return false;
+  }
+
+  // 保存処理を順番に実行
+    const success = await queueIndexedDBSave(snapshot);
+
+  if (!success) {
+    alert(
+      'データを保存できませんでした。\n' +
+      'バックアップを確認してから、もう一度お試しください。'
+    );
+    return false;
+  }
+
+  lastSavedData = snapshot;
+
+  return true;
+}
+
+// ===== アプリ共通の保存処理 =====
+async function save() {
+  return await saveToNewStorage();
+}
+
+// ===== IndexedDBへの切り替え状態 =====
+let storageReady = false;
+let storageError = false;
+
+// ===== IndexedDBを使った起動準備 =====
+async function initializeIndexedDBStorage() {
+  storageReady = false;
+  storageError = false;
+
+  try {
+    // 既存データを安全に移行する
+    const migrated = await migrateLocalData();
+
+    if (!migrated) {
+      throw new Error('既存データの移行に失敗しました');
+    }
+
+    // IndexedDBからデータを読み込む
+    const loaded = await loadDataFromIndexedDB();
+
+    if (loaded !== undefined) {
+      if (
+        !Array.isArray(loaded.themes) ||
+        !Array.isArray(loaded.notes)
+      ) {
+        throw new Error('保存データの形式が正しくありません');
+      }
+
+      data = loaded;
+    } else {
+      // 新規利用時だけ初期データを用意する
+      data = structuredClone(initial);
+    }
+
+    const homeSectionsCreated = await initializeHomeSections();
+
+    if (homeSectionsCreated || loaded === undefined) {
+      const saved = await saveDataToIndexedDB(data);
+
+      if (!saved) {
+        throw new Error('初期データの保存に失敗しました');
+      }
+    }
+
+    lastSavedData = structuredClone(data);
+
+    storageReady = true;
+
+    console.log('IndexedDB起動準備完了', {
+      テーマ数: data.themes.length,
+      メモ数: data.notes.length
+    });
+
+    return true;
+
+  } catch (error) {
+    storageError = true;
+    console.error('IndexedDB起動準備エラー:', error);
+    return false;
+  }
+}
+
+const KEY = 'memo-library-data-v1'; const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36); const initial = { themes: [{ id: 't1', name: '旅行の記録', desc: '旅の計画と思い出をまとめる場所', image: '', favorite: true }, { id: 't2', name: '日々の記録', desc: '毎日の小さな発見', image: '', favorite: false }], notes: [{ id: 'n1', themeId: 't1', title: '京都で行きたい場所', body: '清水寺\n鴨川沿いの散歩\n喫茶店めぐり', image: '', favorite: true, updated: Date.now() }, { id: 'n2', themeId: 't1', title: 'ホテル候補まとめ', body: '駅から近いホテルを探す。', image: '', favorite: false, updated: Date.now() - 86400000 }, { id: 'n3', themeId: 't2', title: '今日の出来事', body: '今日の出来事をここに書こう。', image: '', favorite: true, updated: Date.now() }] };
+let data = null;
+let view = { page: 'home', id: null, tab: 'home', query: '' }; const $ = id => document.getElementById(id); const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); const find = (type, id) => data[type].find(x => x.id === id);
+const nav = (page, id = null) => { view = { ...view, page, id }; render(); window.scrollTo(0, 0) }; const img = (url, cls = 'thumb', symbol = '✎') => url ? `<img class="${cls}" src="${esc(url)}" alt="">` : `<div class="${cls} placeholder">${symbol}</div>`; const section = (name, extra = '') => `<div class="section"><h2>${esc(name)}</h2>${extra}</div>`; const row = (item, kind) => `
   <div class="listrow"
     role="button"
     tabindex="0"
@@ -14,9 +285,9 @@ let data;try{data=JSON.parse(localStorage.getItem(KEY))||structuredClone(initial
 
       <div class="muted">
         ${kind === 'note'
-          ? 'メモ · ' + new Date(item.updated).toLocaleDateString('ja-JP')
-          : data.notes.filter(n => n.themeId === item.id).length + '件のメモ'
-        }
+    ? 'メモ · ' + new Date(item.updated).toLocaleDateString('ja-JP')
+    : data.notes.filter(n => n.themeId === item.id).length + '件のメモ'
+  }
       </div>
     </div>
 
@@ -27,35 +298,44 @@ let data;try{data=JSON.parse(localStorage.getItem(KEY))||structuredClone(initial
 
   </div>
 `;
-const tile=(item,kind)=>`<div class="tile" role="button" tabindex="0" data-open="${kind}" data-id="${esc(item.id)}">${img(item.image,'cover','♫')}<div class="name">${esc(item.name)}</div>
+const tile = (item, kind) => `<div class="tile" role="button" tabindex="0" data-open="${kind}" data-id="${esc(item.id)}">${img(item.image, 'cover', '♫')}<div class="name">${esc(item.name)}</div>
 <div class="muted">${item.themeDate ? esc(item.themeDate.slice(0, 4)) + '年' : ''}</div>
-</div>`;const tabs=()=>`<div class="tabbar"><div class="tabs"><button class="tab ${view.tab==='home'?'active':''}" data-tab="home"><span>⌂</span>ホーム</button><button class="tab ${view.tab==='library'?'active':''}" data-tab="library"><span>▦</span>ライブラリ</button><button class="tab" data-new="note"><span style="color:#ff375f">⊕</span>新規メモ</button><button class="tab ${view.tab==='search'?'active':''}" data-tab="search"><span>⌕</span>検索</button><button class="tab ${view.tab==='settings'?'active':''}" data-tab="settings"><span>⚙</span>設定</button></div></div>`;
-const header=(title='',back=false)=>`<div class="topbar">${back?`<button class="navback" data-back="1">‹ 戻る</button>`:`<strong>${esc(title)}</strong>`}<div><button class="iconbtn" ${view.page==='home'?'data-add-section="1"':`data-new="${view.page==='theme'?'note':'theme'}"`} aria-label="追加">＋</button></div></div>`;
+</div>`; const tabs = () => `<div class="tabbar"><div class="tabs"><button class="tab ${view.tab === 'home' ? 'active' : ''}" data-tab="home"><span>⌂</span>ホーム</button><button class="tab ${view.tab === 'library' ? 'active' : ''}" data-tab="library"><span>▦</span>ライブラリ</button><button class="tab" data-new="note"><span style="color:#ff375f">⊕</span>新規メモ</button><button class="tab ${view.tab === 'search' ? 'active' : ''}" data-tab="search"><span>⌕</span>検索</button><button class="tab ${view.tab === 'settings' ? 'active' : ''}" data-tab="settings"><span>⚙</span>設定</button></div></div>`;
+const header = (title = '', back = false) => `<div class="topbar">${back ? `<button class="navback" data-back="1">‹ 戻る</button>` : `<strong>${esc(title)}</strong>`}<div><button class="iconbtn" ${view.page === 'home' ? 'data-add-section="1"' : `data-new="${view.page === 'theme' ? 'note' : 'theme'}"`} aria-label="追加">＋</button></div></div>`;
 
 // ===== ホーム画面の大項目 =====
 
-// 初回だけ「アルバム」を作成する
-if (!Array.isArray(data.homeSections)) {
-  data.homeSections = [
-    {
-      id: uid(),
-      name: 'アルバム',
-      themeIds: data.themes.map(t => t.id)
-    }
-  ];
+// ===== ホーム画面の大項目を初期設定 =====
+async function initializeHomeSections() {
+  if (!Array.isArray(data.homeSections)) {
+    data.homeSections = [
+      {
+        id: uid(),
+        name: 'アルバム',
+        themeIds: data.themes.map(t => t.id)
+      }
+    ];
 
-  save();
+    // IndexedDBへの保存準備が整うまでは、
+    // 起動処理側でまとめて保存する
+    return true;
+  }
+
+  return false;
 }
+
+// IndexedDBへの切り替え時に、読み込み完了後に実行する
+// initializeHomeSections();
 
 // ===== トップのメモ：4件ずつ横スクロール =====
 function topNotesSection() {
   // 最初は最近更新したメモを表示
   const notes = Array.isArray(data.topNoteIds)
-  ? data.topNoteIds
+    ? data.topNoteIds
       .map(id => find('notes', id))
       .filter(Boolean)
       .slice(0, 20)
-  : data.notes.slice()
+    : data.notes.slice()
       .sort((a, b) => b.updated - a.updated)
       .slice(0, 20);
 
@@ -72,9 +352,9 @@ function topNotesSection() {
       ${pages.map(page => `
         <div class="topnotes-page">
           ${page.map(n => {
-            const theme = find('themes', n.themeId);
+    const theme = find('themes', n.themeId);
 
-            return `
+    return `
               <div
                 class="topnotes-row"
                 role="button"
@@ -99,7 +379,7 @@ function topNotesSection() {
                 >•••</button>
               </div>
             `;
-          }).join('')}
+  }).join('')}
         </div>
       `).join('') || '<p class="muted">まだメモがありません</p>'}
     </div>
@@ -113,9 +393,9 @@ function homeHero() {
   return `
     <div class="home-hero">
       ${image
-        ? `<img class="home-hero-image" src="${esc(image)}" alt="">`
-        : `<div class="home-hero-placeholder">♫</div>`
-      }
+      ? `<img class="home-hero-image" src="${esc(image)}" alt="">`
+      : `<div class="home-hero-placeholder">♫</div>`
+    }
 
       <div class="home-hero-shade"></div>
 
@@ -132,10 +412,10 @@ function homeHero() {
   `;
 }
 
-function render(){
-  let out='';
+function render() {
+  let out = '';
 
-  if(view.page==='home'){
+  if (view.page === 'home') {
     let ts = data.themes.slice().sort((a, b) => {
       const dateA = a.themeDate || '';
       const dateB = b.themeDate || '';
@@ -148,31 +428,31 @@ function render(){
       return (b.createdAt || 0) - (a.createdAt || 0);
     });
     out =
-  header('Memo Library') +
+      header('Memo Library') +
 
-  // 大きなカバー画像
-  homeHero() +
+      // 大きなカバー画像
+      homeHero() +
 
-  // トップのメモ
-  topNotesSection() +
+      // トップのメモ
+      topNotesSection() +
 
-  // テーマ一覧
-  data.homeSections.map(s => {
-  const themes = s.themeIds
-  .map(id => ts.find(t => t.id === id))
-  .filter(Boolean)
-  .sort((a, b) => {
-    const dateCompare = (b.themeDate || '').localeCompare(a.themeDate || '');
+      // テーマ一覧
+      data.homeSections.map(s => {
+        const themes = s.themeIds
+          .map(id => ts.find(t => t.id === id))
+          .filter(Boolean)
+          .sort((a, b) => {
+            const dateCompare = (b.themeDate || '').localeCompare(a.themeDate || '');
 
-    if (dateCompare !== 0) return dateCompare;
+            if (dateCompare !== 0) return dateCompare;
 
-    return (b.createdAt || 0) - (a.createdAt || 0);
-  });
+            return (b.createdAt || 0) - (a.createdAt || 0);
+          });
 
-  return (
-    section(
-  s.name,
-  `
+        return (
+          section(
+            s.name,
+            `
   <button
   type="button"
   data-open-section="${esc(s.id)}"
@@ -193,42 +473,42 @@ function render(){
       名前変更
     </button>
   `
-) +
-    `<div class="cardgrid">
+          ) +
+          `<div class="cardgrid">
       ${themes.map(t => tile(t, 'theme')).join('')}
     </div>`
-  );
-}).join('');
-}
-else if (view.page === 'homeSection') {
-  const s = data.homeSections.find(x => x.id === view.id);
+        );
+      }).join('');
+  }
+  else if (view.page === 'homeSection') {
+    const s = data.homeSections.find(x => x.id === view.id);
 
-  if (!s) {
-    out = header('大項目', true) +
-      '<p class="muted">大項目が見つかりません</p>';
-  } else {
-    const themes = s.themeIds
-  .map(id => find('themes', id))
-  .filter(Boolean)
-  .sort((a, b) => {
-    const dateCompare = (b.themeDate || '').localeCompare(a.themeDate || '');
+    if (!s) {
+      out = header('大項目', true) +
+        '<p class="muted">大項目が見つかりません</p>';
+    } else {
+      const themes = s.themeIds
+        .map(id => find('themes', id))
+        .filter(Boolean)
+        .sort((a, b) => {
+          const dateCompare = (b.themeDate || '').localeCompare(a.themeDate || '');
 
-    if (dateCompare !== 0) return dateCompare;
+          if (dateCompare !== 0) return dateCompare;
 
-    return (b.createdAt || 0) - (a.createdAt || 0);
-  });
+          return (b.createdAt || 0) - (a.createdAt || 0);
+        });
 
-    out =
-  header(s.name, true) +
-  `<h1 class="title">${esc(s.name)}</h1>` +
-  section(
-    'テーマ',
-    `<button
+      out =
+        header(s.name, true) +
+        `<h1 class="title">${esc(s.name)}</h1>` +
+        section(
+          'テーマ',
+          `<button
       type="button"
       data-new-section-theme="${esc(s.id)}"
     >＋ テーマを追加</button>`
-  ) +
- `<div class="cardgrid" style="
+        ) +
+        `<div class="cardgrid" style="
   display: grid;
 grid-template-columns: repeat(2, minmax(0, 1fr));
 gap: 16px 10px;
@@ -236,20 +516,22 @@ overflow: visible;
 ">
   ${themes.map(t => tile(t, 'theme')).join('')}
 </div>`;
+    }
   }
-}
-else if(view.page==='library'){out=header('ライブラリ')+`<h1 class="title">すべてのテーマ</h1>`+data.themes.slice().sort((a,b)=>{
-  const dateCompare=(b.themeDate||'').localeCompare(a.themeDate||'');
-  if(dateCompare!==0)return dateCompare;
-  return (b.createdAt||0)-(a.createdAt||0);
-}).map(t=>row(t,'theme')).join('')+`<div class="content"><button class="outline" data-new="theme">＋ テーマを追加</button></div>`}
-else if(view.page==='theme'){
-  const t = find('themes', view.id);
-  if(!t) return nav('home');
- 
-  const ns = orderedNotes(t.id);
+  else if (view.page === 'library') {
+    out = header('ライブラリ') + `<h1 class="title">すべてのテーマ</h1>` + data.themes.slice().sort((a, b) => {
+      const dateCompare = (b.themeDate || '').localeCompare(a.themeDate || '');
+      if (dateCompare !== 0) return dateCompare;
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    }).map(t => row(t, 'theme')).join('') + `<div class="content"><button class="outline" data-new="theme">＋ テーマを追加</button></div>`
+  }
+  else if (view.page === 'theme') {
+    const t = find('themes', view.id);
+    if (!t) return nav('home');
 
-  out = `
+    const ns = orderedNotes(t.id);
+
+    out = `
     <div class="album-page">
 
       <div class="album-header">
@@ -280,10 +562,10 @@ else if(view.page==='theme'){
 
       <div class="album-notes">
         ${ns.length
-          ? ns.map((n,i) => `
+        ? ns.map((n, i) => `
               <div class="album-note" data-sort-id="${esc(n.id)}">
 
-  <span class="album-number">${i+1}</span>
+  <span class="album-number">${i + 1}</span>
 
   <div class="album-note-title"
     role="button"
@@ -300,8 +582,8 @@ else if(view.page==='theme'){
 
 </div>
             `).join('')
-          : '<div class="empty">まだメモがありません</div>'
-        }
+        : '<div class="empty">まだメモがありません</div>'
+      }
       </div>
 
        <div class="album-release-date" style="
@@ -312,99 +594,143 @@ padding-top: 12px;
   font-size: 14px;
 ">
         ${t.themeDate
-          ? new Date(t.themeDate + 'T00:00:00').toLocaleDateString('ja-JP', {
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
-            })
-          : ''}
+        ? new Date(t.themeDate + 'T00:00:00').toLocaleDateString('ja-JP', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        })
+        : ''}
       </div>
 
     </div>
   `;
-}
-else if(view.page==='note'){let n=find('notes',view.id);if(!n)return nav('home');out=header('',true)+`<div class="content" style="padding-top:20px">${n.image?`<img src="${esc(n.image)}" style="width:100%;max-height:330px;object-fit:cover;border-radius:14px">`:''}<h1>${esc(n.title)}</h1><div class="muted">${new Date(n.updated).toLocaleString('ja-JP')}</div><p class="desc" style="color:#eee;font-size:17px;min-height:100px">${esc(n.body)}</p><button class="action" data-edit="note" data-id="${n.id}">編集する</button> <button class="pill" data-fav="note" data-id="${n.id}">${n.favorite?'★':'☆'} お気に入り</button></div>`}
-else if(view.page==='search'){
-  let q = view.query.toLowerCase();
+  }
+  else if (view.page === 'note') { let n = find('notes', view.id); if (!n) return nav('home'); out = header('', true) + `<div class="content" style="padding-top:20px">${n.image ? `<img src="${esc(n.image)}" style="width:100%;max-height:330px;object-fit:cover;border-radius:14px">` : ''}<h1>${esc(n.title)}</h1><div class="muted">${new Date(n.updated).toLocaleString('ja-JP')}</div><p class="desc" style="color:#eee;font-size:17px;min-height:100px">${esc(n.body)}</p><button class="action" data-edit="note" data-id="${n.id}">編集する</button> <button class="pill" data-fav="note" data-id="${n.id}">${n.favorite ? '★' : '☆'} お気に入り</button></div>` }
+  else if (view.page === 'search') {
+    let q = view.query.toLowerCase();
 
-  let match = x =>
-    [x.name, x.title, x.desc, x.body]
-      .some(v => String(v || '').toLowerCase().includes(q));
+    let match = x =>
+      [x.name, x.title, x.desc, x.body]
+        .some(v => String(v || '').toLowerCase().includes(q));
 
-  out = header('検索') +
-    `<h1 class="title">検索</h1>
+    out = header('検索') +
+      `<h1 class="title">検索</h1>
      <input
        class="field search"
        id="searchInput"
        placeholder="テーマ、メモを検索"
        value="${esc(view.query)}"
      >` +
-    (q
-      ? section('テーマ') +
+      (q
+        ? section('テーマ') +
         data.themes.filter(match).map(t => row(t, 'theme')).join('') +
         section('メモ') +
         data.notes.filter(match).map(n => row(n, 'note')).join('')
-      : '<div class="empty">キーワードを入力して検索</div>');
-}
-else if(view.page==='settings'){out=header('設定')+`<h1 class="title">設定</h1><div class="content"><p>メモはこの端末のブラウザ内に保存されます。消失に備えて定期的にバックアップしてください。</p><button class="action" id="export">バックアップを書き出す</button><p><label class="outline">バックアップを読み込む<input type="file" id="import" accept="application/json" hidden></label></p><p class="hint">読み込みは現在のデータを置き換えます。Safariとホーム画面アプリでは保存領域が別になる場合があります。</p></div>`}
-$('app').innerHTML=out+tabs();// テーマ詳細画面の背景色を更新
-if (view.page === 'theme') {
-  const theme = find('themes', view.id);
-  const page = document.querySelector('.album-page');
-
-  if (theme && page) {
-    getAlbumColor(theme.image).then(color => {
-      if (page.isConnected) {
-        page.style.setProperty('--album-color', color);
-      }
-    });
+        : '<div class="empty">キーワードを入力して検索</div>');
   }
-}
+  else if (view.page === 'settings') { out = header('設定') + `<h1 class="title">設定</h1><div class="content"><p>メモはこの端末のブラウザ内に保存されます。消失に備えて定期的にバックアップしてください。</p><button class="action" id="export">バックアップを書き出す</button><p><label class="outline">バックアップを読み込む<input type="file" id="import" accept="application/json" hidden></label></p><p class="hint">読み込みは現在のデータを置き換えます。Safariとホーム画面アプリでは保存領域が別になる場合があります。</p></div>` }
+  $('app').innerHTML = out + tabs();// テーマ詳細画面の背景色を更新
+  if (view.page === 'theme') {
+    const theme = find('themes', view.id);
+    const page = document.querySelector('.album-page');
 
-if (view.page === 'search') {
-  const inp = $('searchInput');
-
-  if (inp) {
-    let composing = false;
-
-    const updateSearch = () => {
-      const pos = inp.selectionStart;
-      view.query = inp.value;
-
-      render();
-
-      const newInp = $('searchInput');
-
-      if (newInp) {
-        newInp.focus();
-
-        if (pos !== null) {
-          newInp.setSelectionRange(pos, pos);
+    if (theme && page) {
+      getAlbumColor(theme.image).then(color => {
+        if (page.isConnected) {
+          page.style.setProperty('--album-color', color);
         }
-      }
-    };
+      });
+    }
+  }
 
-    // 日本語の変換開始
-    inp.addEventListener('compositionstart', () => {
-      composing = true;
-    });
+  if (view.page === 'search') {
+    const inp = $('searchInput');
 
-    // 日本語の変換確定
-    inp.addEventListener('compositionend', () => {
-      composing = false;
-      updateSearch();
-    });
+    if (inp) {
+      let composing = false;
 
-    // 通常の文字入力
-    inp.addEventListener('input', e => {
-      if (composing || e.isComposing) return;
+      const updateSearch = () => {
+        const pos = inp.selectionStart;
+        view.query = inp.value;
 
-      updateSearch();
-    });
+        render();
+
+        const newInp = $('searchInput');
+
+        if (newInp) {
+          newInp.focus();
+
+          if (pos !== null) {
+            newInp.setSelectionRange(pos, pos);
+          }
+        }
+      };
+
+      // 日本語の変換開始
+      inp.addEventListener('compositionstart', () => {
+        composing = true;
+      });
+
+      // 日本語の変換確定
+      inp.addEventListener('compositionend', () => {
+        composing = false;
+        updateSearch();
+      });
+
+      // 通常の文字入力
+      inp.addEventListener('input', e => {
+        if (composing || e.isComposing) return;
+
+        updateSearch();
+      });
+    }
+  }
+
+  if (view.page === 'settings') {
+    $('export').onclick = () => { let b = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = 'memo-library-backup.json'; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000) }; $('import').onchange = async e => {
+      let f = e.target.files[0]; if (!f) return; try {
+        let d = JSON.parse(await f.text()); if (!Array.isArray(d.themes) || !Array.isArray(d.notes)) throw Error(); if (confirm('現在のメモをバックアップの内容で置き換えますか？')) {
+                    const previousData = data;
+
+          try {
+            // 大項目の形式も確認する
+            if (
+              d.homeSections !== undefined &&
+              (
+                !Array.isArray(d.homeSections) ||
+                !d.homeSections.every(s =>
+                  s &&
+                  typeof s.id === 'string' &&
+                  typeof s.name === 'string' &&
+                  Array.isArray(s.themeIds)
+                )
+              )
+            ) {
+              throw new Error('大項目のデータ形式が正しくありません');
+            }
+
+            data = d;
+
+            // 古いバックアップに大項目がない場合は補う
+            await initializeHomeSections();
+
+            if (!(await save())) {
+              data = previousData;
+              return;
+            }
+
+            render();
+
+          } catch (error) {
+            data = previousData;
+            console.error('バックアップ読み込みエラー:', error);
+            alert('バックアップの読み込みに失敗しました。');
+          }
+        }
+      } catch { alert('正しいバックアップファイルではありません') }
+    }
   }
 }
-
-if(view.page==='settings'){$('export').onclick=()=>{let b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='memo-library-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};$('import').onchange=async e=>{let f=e.target.files[0];if(!f)return;try{let d=JSON.parse(await f.text());if(!Array.isArray(d.themes)||!Array.isArray(d.notes))throw Error();if(confirm('現在のメモをバックアップの内容で置き換えますか？')){data=d;save();render()}}catch{alert('正しいバックアップファイルではありません')}}}}
 
 // 今日の日付を YYYY-MM-DD 形式で取得
 function todayString() {
@@ -540,7 +866,7 @@ function form(kind, id) {
 
   // 削除
   if (id) {
-    $('delete').onclick = () => {
+    $('delete').onclick = async () => {
       if (!confirm(
         kind === 'theme'
           ? 'このテーマと、その中のメモをすべて削除しますか？'
@@ -553,7 +879,10 @@ function form(kind, id) {
 
       data[type] = data[type].filter(x => x.id !== id);
 
-      if (!save()) return;
+      if (!(await save())) {
+        restoreLastSavedData();
+        return;
+      }
 
       $('modal').innerHTML = '';
       nav('home');
@@ -586,16 +915,16 @@ function form(kind, id) {
         order: obj?.order
       };
     } else {
-  item = {
-    id: id || uid(),
-    name: v.name.value.trim(),
-    desc: v.desc.value,
-    themeDate: v.themeDate.value,
-    createdAt: obj?.createdAt || Date.now(),
-    image,
-    favorite: obj?.favorite || false
-  };
-}
+      item = {
+        id: id || uid(),
+        name: v.name.value.trim(),
+        desc: v.desc.value,
+        themeDate: v.themeDate.value,
+        createdAt: obj?.createdAt || Date.now(),
+        image,
+        favorite: obj?.favorite || false
+      };
+    }
     if (!item.title && !item.name) return;
 
     if (id) {
@@ -604,29 +933,27 @@ function form(kind, id) {
       data[type].push(item);
     }
 
-    // テーマ作成元の確認（一時的な調査用）
-if (kind === 'theme' && !id) {
- console.log('テーマ保存時の作成先:', window.creatingSectionId);
-}
-
     // 大項目の中から新しく作ったテーマを登録
-if (kind === 'theme' && !id && window.creatingSectionId) {
-  const s = data.homeSections.find(
-    x => x.id === window.creatingSectionId
-  );
+    if (kind === 'theme' && !id && window.creatingSectionId) {
+      const s = data.homeSections.find(
+        x => x.id === window.creatingSectionId
+      );
 
- if (s && !s.themeIds.includes(item.id)) {
-  s.themeIds.unshift(item.id);
-}
-}
+      if (s && !s.themeIds.includes(item.id)) {
+        s.themeIds.unshift(item.id);
+      }
+    }
 
-// テーマと大項目の情報をまとめて保存
-if (!save()) return;
+    // テーマと大項目の情報をまとめて保存
+    if (!(await save())) {
+      restoreLastSavedData();
+      return;
+    }
 
-// 保存成功後に作成先の記憶を消す
-if (kind === 'theme' && !id) {
-  window.creatingSectionId = null;
-}
+    // 保存成功後に作成先の記憶を消す
+    if (kind === 'theme' && !id) {
+      window.creatingSectionId = null;
+    }
 
     $('modal').innerHTML = '';
 
@@ -706,7 +1033,7 @@ function orderedNotes(themeId) {
 }
 
 // メモを上下に移動
-function moveNote(noteId, direction) {
+async function moveNote(noteId, direction) {
   const note = find('notes', noteId);
   if (!note) return;
 
@@ -722,11 +1049,16 @@ function moveNote(noteId, direction) {
     n.order = i;
   });
 
-  save();
+  if (!(await save())) {
+    restoreLastSavedData();
+    render();
+    return;
+  }
+
   render();
 }
 
-function compress(file){return new Promise((resolve,reject)=>{let r=new FileReader();r.onload=()=>{let i=new Image();i.onload=()=>{let scale=Math.min(1,800/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=Math.max(1,Math.round(i.width*scale));c.height=Math.max(1,Math.round(i.height*scale));c.getContext('2d').drawImage(i,0,0,c.width,c.height);resolve(c.toDataURL('image/jpeg',.68))};i.onerror=reject;i.src=r.result};r.onerror=reject;r.readAsDataURL(file)})}
+function compress(file) { return new Promise((resolve, reject) => { let r = new FileReader(); r.onload = () => { let i = new Image(); i.onload = () => { let scale = Math.min(1, 800 / Math.max(i.width, i.height)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(i.width * scale)); c.height = Math.max(1, Math.round(i.height * scale)); c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); resolve(c.toDataURL('image/jpeg', .68)) }; i.onerror = reject; i.src = r.result }; r.onerror = reject; r.readAsDataURL(file) }) }
 
 // ===== トップのメモ：編集画面 =====
 function editTopNotes() {
@@ -748,9 +1080,9 @@ function editTopNotes() {
 
       <div class="topnotes-picker">
         ${notes.map(n => {
-          const theme = find('themes', n.themeId);
+    const theme = find('themes', n.themeId);
 
-          return `
+    return `
             <label class="topnotes-choice">
               <input
                 type="checkbox"
@@ -775,7 +1107,7 @@ function editTopNotes() {
 >
             </label>
           `;
-        }).join('') || '<p class="muted">メモがありません</p>'}
+  }).join('') || '<p class="muted">メモがありません</p>'}
       </div>
 
       <button type="button" class="primary" data-save-topnotes="1">
@@ -790,12 +1122,12 @@ function editTopNotes() {
   `;
 
   // 番号入力欄の操作でチェックボックスが切り替わるのを防ぐ
-modal.querySelectorAll('.topnotes-order').forEach(input => {
-  input.addEventListener('click', e => {
-    e.preventDefault();
-    e.stopPropagation();
+  modal.querySelectorAll('.topnotes-order').forEach(input => {
+    input.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
   });
-});
 
   // チェックした順番を記録
   let chosen = [...selected];
@@ -815,70 +1147,73 @@ modal.querySelectorAll('.topnotes-order').forEach(input => {
     });
   });
 
-modal.querySelector('[data-save-topnotes]').addEventListener('click', () => {
+  modal.querySelector('[data-save-topnotes]').addEventListener('click', async () => {
 
-  const selectedNotes = [];
+    const selectedNotes = [];
 
-  modal.querySelectorAll('.topnotes-choice').forEach(row => {
-    const checkbox = row.querySelector('input[type="checkbox"]');
-    const orderInput = row.querySelector('.topnotes-order');
+    modal.querySelectorAll('.topnotes-choice').forEach(row => {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      const orderInput = row.querySelector('.topnotes-order');
 
-    if (!checkbox.checked) return;
+      if (!checkbox.checked) return;
 
-    const order = Number(orderInput.value);
+      const order = Number(orderInput.value);
 
-    selectedNotes.push({
-      id: checkbox.value,
-      order
+      selectedNotes.push({
+        id: checkbox.value,
+        order
+      });
     });
+
+    // 最大20件
+    if (selectedNotes.length > 20) {
+      alert('トップのメモは最大20件までです。');
+      return;
+    }
+
+    // 番号が1〜20の整数か確認
+    if (selectedNotes.some(n =>
+      !Number.isInteger(n.order) ||
+      n.order < 1 ||
+      n.order > 20
+    )) {
+      alert('選択したメモには1〜20の番号を入力してください。');
+      return;
+    }
+
+    // 同じ番号がないか確認
+    const orders = selectedNotes.map(n => n.order);
+
+    if (new Set(orders).size !== orders.length) {
+      alert('同じ番号は使えません。');
+      return;
+    }
+
+    // 番号の小さい順に並べる
+    selectedNotes.sort((a, b) => a.order - b.order);
+
+    // 並び順を保存
+    data.topNoteIds = selectedNotes.map(n => n.id);
+
+    if (!(await save())) {
+      restoreLastSavedData();
+      return;
+    }
+
+    modal.innerHTML = '';
+    render();
+  });
+  // キャンセルボタンを押したときだけ閉じる
+  modal.querySelector('[data-close-topnotes]').addEventListener('click', () => {
+    modal.innerHTML = '';
   });
 
-  // 最大20件
-  if (selectedNotes.length > 20) {
-    alert('トップのメモは最大20件までです。');
-    return;
-  }
-
-  // 番号が1〜20の整数か確認
-  if (selectedNotes.some(n =>
-    !Number.isInteger(n.order) ||
-    n.order < 1 ||
-    n.order > 20
-  )) {
-    alert('選択したメモには1〜20の番号を入力してください。');
-    return;
-  }
-
-  // 同じ番号がないか確認
-  const orders = selectedNotes.map(n => n.order);
-
-  if (new Set(orders).size !== orders.length) {
-    alert('同じ番号は使えません。');
-    return;
-  }
-
-  // 番号の小さい順に並べる
-  selectedNotes.sort((a, b) => a.order - b.order);
-
-  // 並び順を保存
-  data.topNoteIds = selectedNotes.map(n => n.id);
-
-  if (!save()) return;
-
-  modal.innerHTML = '';
-  render();
-});
-// キャンセルボタンを押したときだけ閉じる
-modal.querySelector('[data-close-topnotes]').addEventListener('click', () => {
-  modal.innerHTML = '';
-});
-
-// 編集画面の外側を押したときだけ閉じる
-modal.querySelector('#topnotes-shade').addEventListener('click', e => {
-  if (e.target.id === 'topnotes-shade') {
-    modal.innerHTML = '';
-  }
-});
+  // 編集画面の外側を押したときだけ閉じる
+  modal.querySelector('#topnotes-shade').addEventListener('click', e => {
+    if (e.target.id === 'topnotes-shade') {
+      modal.innerHTML = '';
+    }
+  });
 }
 
 // ===== メモ並べ替えボタン =====
@@ -1041,7 +1376,7 @@ document.addEventListener('pointermove', e => {
 });
 
 // ドラッグ終了
-document.addEventListener('pointerup', e => {
+document.addEventListener('pointerup', async e => {
   if (e.pointerId !== sortPointerId) return;
 
   if (!sortRow) {
@@ -1077,7 +1412,12 @@ document.addEventListener('pointerup', e => {
     n.order = i;
   });
 
-  save();
+  if (!(await save())) {
+    restoreLastSavedData();
+    render();
+    return;
+  }
+
   render();
 });
 
@@ -1096,7 +1436,7 @@ document.addEventListener('click', e => {
 }, true);
 
 // ===== 新しい大項目を追加 =====
-function addHomeSection() {
+async function addHomeSection() {
   const name = prompt('新しい大項目の名前を入力してください');
 
   // キャンセルした場合
@@ -1116,8 +1456,8 @@ function addHomeSection() {
 
   data.homeSections.push(newSection);
 
-  if (!save()) {
-    data.homeSections.pop();
+  if (!(await save())) {
+    restoreLastSavedData();
     return;
   }
 
@@ -1164,15 +1504,15 @@ function selectSectionThemes(id) {
   `;
 
   // 保存
-  modal.querySelector('[data-save-section-themes]').addEventListener('click', () => {
+  modal.querySelector('[data-save-section-themes]').addEventListener('click', async () => {
     const oldIds = [...s.themeIds];
 
     s.themeIds = [
       ...modal.querySelectorAll('.topnotes-choice input:checked')
     ].map(input => input.value);
 
-    if (!save()) {
-      s.themeIds = oldIds;
+    if (!(await save())) {
+      restoreLastSavedData();
       return;
     }
 
@@ -1194,46 +1534,46 @@ function selectSectionThemes(id) {
 }
 
 // ===== 大項目の名前を編集 =====
-function editHomeSection(id) {
+async function editHomeSection(id) {
   const s = data.homeSections.find(x => x.id === id);
   if (!s) return;
 
   const action = prompt(
-  `「${s.name}」を編集します。\n\n名前を変更する場合：新しい名前を入力\n削除する場合：「削除」と入力`,
-  s.name
-);
-
-if (action === null) return;
-
-if (action.trim() === '削除') {
-  const confirmed = confirm(
-    `「${s.name}」を削除しますか？\n\nこの大項目に含まれるテーマとメモもすべて削除されます。\nこの操作は取り消せません。`
+    `「${s.name}」を編集します。\n\n名前を変更する場合：新しい名前を入力\n削除する場合：「削除」と入力`,
+    s.name
   );
 
-  if (!confirmed) return;
+  if (action === null) return;
 
-  const themeIds = new Set(s.themeIds);
+  if (action.trim() === '削除') {
+    const confirmed = confirm(
+      `「${s.name}」を削除しますか？\n\nこの大項目に含まれるテーマとメモもすべて削除されます。\nこの操作は取り消せません。`
+    );
 
-  const oldSections = data.homeSections;
-  const oldThemes = data.themes;
-  const oldNotes = data.notes;
+    if (!confirmed) return;
 
-  data.homeSections = data.homeSections.filter(x => x.id !== id);
-  data.themes = data.themes.filter(t => !themeIds.has(t.id));
-  data.notes = data.notes.filter(n => !themeIds.has(n.themeId));
+    const themeIds = new Set(s.themeIds);
 
-  if (!save()) {
-    data.homeSections = oldSections;
-    data.themes = oldThemes;
-    data.notes = oldNotes;
+    const oldSections = data.homeSections;
+    const oldThemes = data.themes;
+    const oldNotes = data.notes;
+
+    data.homeSections = data.homeSections.filter(x => x.id !== id);
+    data.themes = data.themes.filter(t => !themeIds.has(t.id));
+    data.notes = data.notes.filter(n => !themeIds.has(n.themeId));
+
+    if (!(await save())) {
+      data.homeSections = oldSections;
+      data.themes = oldThemes;
+      data.notes = oldNotes;
+      return;
+    }
+
+    render();
     return;
   }
 
-  render();
-  return;
-}
-
-const newName = action;
+  const newName = action;
 
   // キャンセルした場合
   if (newName === null) return;
@@ -1247,7 +1587,7 @@ const newName = action;
   const oldName = s.name;
   s.name = newName.trim();
 
-  if (!save()) {
+  if (!(await save())) {
     s.name = oldName;
     return;
   }
@@ -1273,7 +1613,7 @@ function editHomeHero() {
 
       data.homeHeroImage = image;
 
-      if (!save()) {
+      if (!(await save())) {
         data.homeHeroImage = previousImage;
         return;
       }
@@ -1287,57 +1627,57 @@ function editHomeHero() {
   input.click();
 }
 
-document.addEventListener('click',e=>{
-    // 大項目の中から新しいテーマを作成
-const newSectionThemeButton = e.target.closest('[data-new-section-theme]');
+document.addEventListener('click', async e => {
+  // 大項目の中から新しいテーマを作成
+  const newSectionThemeButton = e.target.closest('[data-new-section-theme]');
 
-if (newSectionThemeButton) {
-  const sectionId = newSectionThemeButton.dataset.newSectionTheme;
+  if (newSectionThemeButton) {
+    const sectionId = newSectionThemeButton.dataset.newSectionTheme;
 
-  // 作成先の大項目が存在するか確認
-  const section = data.homeSections.find(s => s.id === sectionId);
+    // 作成先の大項目が存在するか確認
+    const section = data.homeSections.find(s => s.id === sectionId);
 
-  if (!section) {
-    alert('大項目が見つかりません。');
+    if (!section) {
+      alert('大項目が見つかりません。');
+      return;
+    }
+
+    // 作成先を記憶
+    window.creatingSectionId = sectionId;
+
+    form('theme');
     return;
   }
 
-  // 作成先を記憶
-  window.creatingSectionId = sectionId;
+  // 大項目の専用ページを開く
+  const openSectionButton = e.target.closest('[data-open-section]');
 
-  form('theme');
-  return;
-}
+  if (openSectionButton) {
+    nav('homeSection', openSectionButton.dataset.openSection);
+    return;
+  }
 
-    // 大項目の専用ページを開く
-const openSectionButton = e.target.closest('[data-open-section]');
+  // 大項目のテーマ選択
+  const selectButton = e.target.closest('[data-select-section-themes]');
 
-if (openSectionButton) {
-  nav('homeSection', openSectionButton.dataset.openSection);
-  return;
-}
+  if (selectButton) {
+    selectSectionThemes(selectButton.dataset.selectSectionThemes);
+    return;
+  }
 
-    // 大項目のテーマ選択
-const selectButton = e.target.closest('[data-select-section-themes]');
+  // 大項目を追加
+  if (e.target.closest('[data-add-section]')) {
+    addHomeSection();
+    return;
+  }
 
-if (selectButton) {
-  selectSectionThemes(selectButton.dataset.selectSectionThemes);
-  return;
-}
+  // 大項目の編集ボタン
+  const sectionButton = e.target.closest('[data-edit-section]');
 
-    // 大項目を追加
-if (e.target.closest('[data-add-section]')) {
-  addHomeSection();
-  return;
-}
-
-    // 大項目の編集ボタン
-const sectionButton = e.target.closest('[data-edit-section]');
-
-if (sectionButton) {
-  editHomeSection(sectionButton.dataset.editSection);
-  return;
-}
+  if (sectionButton) {
+    editHomeSection(sectionButton.dataset.editSection);
+    return;
+  }
 
   // ホームの大きなカバー画像を変更
   if (e.target.closest('[data-edit-hero]')) {
@@ -1351,8 +1691,8 @@ if (sectionButton) {
     return;
   }
 
-  let x=e.target.closest('[data-tab],[data-open],[data-new],[data-edit],[data-fav],[data-back]');
-  if(!x)return;
+  let x = e.target.closest('[data-tab],[data-open],[data-new],[data-edit],[data-fav],[data-back]');
+  if (!x) return;
 
   // タブ切り替え
   if (x.dataset.tab) {
@@ -1389,8 +1729,15 @@ if (sectionButton) {
 
     if (!obj) return;
 
+
     obj.favorite = !obj.favorite;
-    save();
+
+    if (!(await save())) {
+      restoreLastSavedData();
+      render();
+      return;
+    }
+
     render();
   }
 
@@ -1405,4 +1752,23 @@ if (sectionButton) {
       nav('home');
     }
   }
-});document.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target.matches('[data-open]')){e.preventDefault();nav(e.target.dataset.open,e.target.dataset.id)}});if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});render();
+}); document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-open]')) { e.preventDefault(); nav(e.target.dataset.open, e.target.dataset.id) } });
+
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('./sw.js').catch(() => { });
+}
+
+// IndexedDBの読み込み完了後にアプリを表示する
+async function bootApp() {
+  const ok = await initializeIndexedDBStorage();
+
+  if (!ok) {
+    document.getElementById('app').innerHTML =
+      '<div class="content">データを読み込めませんでした。ページを再読み込みしてください。</div>';
+    return;
+  }
+
+  render();
+}
+
+bootApp();
