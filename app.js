@@ -335,9 +335,9 @@ function topNotesSection() {
       .map(id => find('notes', id))
       .filter(Boolean)
       .slice(0, 20)
-    : data.notes.slice()
-      .sort((a, b) => b.updated - a.updated)
-      .slice(0, 20);
+      : data.notes.slice()
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 20);
 
   // 4件ずつに分ける
   const pages = [];
